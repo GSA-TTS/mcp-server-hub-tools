@@ -1,4 +1,4 @@
-name: Build release providers
+name: Build GSA providers image
 
 permissions:
   id-token: write
@@ -6,53 +6,118 @@ permissions:
   packages: write
 
 on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "auth-providers-common/**"
+      - "login.gov-auth-provider/**"
+      - "packaging/providers/**"
+      - "scripts/verify-logingov-provider-image.sh"
+      - "Dockerfile"
+      - ".github/workflows/build-providers.yaml"
   push:
     branches:
       - main
     tags:
       - "v*"
+    paths:
+      - "auth-providers-common/**"
+      - "login.gov-auth-provider/**"
+      - "packaging/providers/**"
+      - "scripts/verify-logingov-provider-image.sh"
+      - "Dockerfile"
+      - ".github/workflows/build-providers.yaml"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: gsa-tts/mcp-server-hub-tools/providers
 
 jobs:
   providers-build:
-    runs-on: depot-ubuntu-22.04
-    concurrency:
-      group: oss-providers-build
-      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${IMAGE_NAME}"
+          tags="${image}:sha-${GITHUB_SHA::7}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tags="${tags},${image}:${GITHUB_REF_NAME}"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Build providers image for verification
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          target: public-providers
+          platforms: linux/amd64
+          tags: local/logingov-providers:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify provider image
+        run: bash ./scripts/verify-logingov-provider-image.sh local/logingov-providers:verify
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and Push Docker image
-        uses: depot/build-push-action@v1
-        id: build-and-push
+      - name: Push providers image
+        if: github.event_name != 'pull_request'
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
-          project: bbqjs4tj1g
           context: .
           push: true
-          pull: true
-          target: providers
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ github.ref_type == 'tag' && format('ghcr.io/obot-platform/tools/providers:{0}', github.ref_name) || 'ghcr.io/obot-platform/tools/providers:latest' }}
+          target: public-providers
+          platforms: linux/amd64
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v3.8.1
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@053f9b74638557590800a301da1ba82351507e2c # v3.8.1
         with:
           cosign-release: "v2.4.3"
 
-      - name: Sign Images
+      - name: Sign image
+        if: github.event_name != 'pull_request'
         env:
-          DIGEST: ${{ steps.build-and-push.outputs.digest }}
-          TAGS: ${{ github.ref_type == 'tag' && format('ghcr.io/obot-platform/tools/providers:{0}', github.ref_name) || 'ghcr.io/obot-platform/tools/providers:latest' }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.tags.outputs.tags }}
         run: |
-          images=""
-          for tag in ${TAGS}; do
-            images+="${tag}@${DIGEST} "
+          set -euo pipefail
+          images=()
+          IFS=',' read -ra tags <<< "$TAGS"
+          for tag in "${tags[@]}"; do
+            images+=("${tag}@${DIGEST}")
           done
-          cosign sign --yes ${images}
+          cosign sign --yes "${images[@]}"
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### GSA providers image built"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Tags | \`${{ steps.tags.outputs.tags }}\` |"
+            echo "| Digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| Platform | \`linux/amd64\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -64,6 +64,7 @@ func main() {
 		fmt.Printf("ERROR: login.gov-auth-provider: failed to load options: %v\n", err)
 		os.Exit(1)
 	}
+	opts.JWTKey = normalizeMultilineSecret(opts.JWTKey)
 
 	base := productionBase
 	switch strings.ToLower(strings.TrimSpace(opts.Environment)) {
@@ -187,4 +188,8 @@ func main() {
 		fmt.Printf("ERROR: login.gov-auth-provider: failed to listen and serve: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func normalizeMultilineSecret(value string) string {
+	return strings.ReplaceAll(value, `\n`, "\n")
 }

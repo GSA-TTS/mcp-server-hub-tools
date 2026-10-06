@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+export GPTSCRIPT_TOOL_DIR=/obot-providers/gsa-tools/login.gov-auth-provider
+exec /obot-providers/gsa-tools/bin/login.gov-auth-provider.bin "$@"

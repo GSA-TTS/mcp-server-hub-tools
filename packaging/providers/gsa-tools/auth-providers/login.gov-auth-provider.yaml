@@ -1,0 +1,40 @@
+name: Login.gov
+command: bin/login.gov-auth-provider
+icon: https://raw.githubusercontent.com/GSA-TTS/mcp-server-hub-catalog/main/icons/login_gov.png
+iconDark: https://raw.githubusercontent.com/GSA-TTS/mcp-server-hub-catalog/main/icons/login_gov.png
+description: Authenticate users with login.gov.
+link: https://login.gov/
+postgresTablePrefix: logingov_
+requiredConfigurationParameters:
+  - name: OBOT_LOGINGOV_AUTH_PROVIDER_CLIENT_ID
+    friendlyName: Client ID
+    description: The issuer or service-provider identifier registered in the login.gov Partner Portal.
+  - name: OBOT_LOGINGOV_AUTH_PROVIDER_JWT_KEY
+    friendlyName: JWT signing key
+    description: RSA private key in PEM format used for private_key_jwt client authentication.
+    sensitive: true
+    multiline: true
+  - name: OBOT_LOGINGOV_AUTH_PROVIDER_PUBJWK_URL
+    friendlyName: Public JWK URL
+    description: Login.gov JWKS URL used to verify ID tokens.
+optionalConfigurationParameters:
+  - name: OBOT_LOGINGOV_AUTH_PROVIDER_ACR_VALUES
+    friendlyName: ACR values
+    description: Defaults to urn:acr.login.gov:auth-only.
+  - name: OBOT_LOGINGOV_AUTH_PROVIDER_ENVIRONMENT
+    friendlyName: Environment
+    description: sandbox or production; defaults to sandbox.
+  - name: OBOT_AUTH_PROVIDER_EMAIL_DOMAINS
+    friendlyName: Allowed email domains
+    description: Comma-separated domains; defaults to all domains.
+  - name: OBOT_AUTH_PROVIDER_POSTGRES_CONNECTION_DSN
+    friendlyName: PostgreSQL connection string
+    description: Optional session-store DSN supplied by Obot.
+    sensitive: true
+    hidden: true
+  - name: OBOT_AUTH_PROVIDER_TOKEN_REFRESH_DURATION
+    friendlyName: Token refresh duration
+    description: Defaults to 1h.
+  - name: OBOT_AUTH_PROVIDER_ENABLE_LOGGING
+    friendlyName: Enable logging
+    description: Set to true to enable oauth2-proxy logging.
