@@ -100,6 +100,11 @@ catalog repo: `.../GSA-TTS/mcp-server-hub-catalog/main/icons/login_gov.png`.
 
 ## 6. Known gaps / blockers
 
+> **Update (2026-10-06):** cloud.gov HTTPS is live. Stage 3 work now packages
+> this provider into a GSA provider-registry image and configures it through
+> Obot's encrypted Auth Providers UI/API. The table below is the earlier AWS
+> snapshot.
+
 | Item | Notes |
 |------|-------|
 | **End-to-end testing blocked on HTTPS** | login.gov requires an HTTPS redirect; the hub's ALB is HTTP-only. This is the hard blocker (see `mcp-server-hub` ROADMAP + login_auth_roadmap). |

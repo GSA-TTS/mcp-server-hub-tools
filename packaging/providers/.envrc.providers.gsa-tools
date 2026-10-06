@@ -1,0 +1,2 @@
+export OBOT_SERVER_PROVIDER_REGISTRIES="/obot-providers/gsa-tools"
+export OBOT_SERVER_VERSIONS="github.com/GSA-TTS/mcp-server-hub-tools=login.gov"
