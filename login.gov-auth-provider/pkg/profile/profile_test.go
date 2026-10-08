@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestFetchLoginGovProfile(t *testing.T) {
@@ -61,12 +63,74 @@ func TestFetchLoginGovProfile(t *testing.T) {
 
 func TestFetchLoginGovProfileErrorStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		http.Error(w, "sensitive upstream response", http.StatusUnauthorized)
 	}))
 	defer server.Close()
 
 	ctx := context.Background()
-	if _, err := FetchLoginGovProfile(ctx, "Bearer bad_token", server.URL); err == nil {
+	_, err := FetchLoginGovProfile(ctx, "Bearer bad_token", server.URL)
+	if err == nil {
 		t.Fatalf("expected an error for non-200 status, got nil")
+	}
+	if strings.Contains(err.Error(), "sensitive upstream response") {
+		t.Fatalf("error exposed the upstream response body: %v", err)
+	}
+}
+
+func TestFetchLoginGovProfileRejectsInvalidResponses(t *testing.T) {
+	tests := map[string]struct {
+		response string
+		want     string
+	}{
+		"malformed JSON": {
+			response: `{`,
+			want:     "decode login.gov userinfo",
+		},
+		"missing subject": {
+			response: `{"email":"test@gsa.gov","email_verified":true}`,
+			want:     "missing required claims",
+		},
+		"missing email": {
+			response: `{"sub":"subject","email_verified":true}`,
+			want:     "missing required claims",
+		},
+		"unverified email": {
+			response: `{"sub":"subject","email":"test@gsa.gov","email_verified":false}`,
+			want:     "email is not verified",
+		},
+		"oversized response": {
+			response: `{"sub":"subject","email":"test@gsa.gov","email_verified":true,"given_name":"` + strings.Repeat("a", maxUserInfoResponseBytes) + `"}`,
+			want:     "request body too large",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			defer server.Close()
+
+			_, err := FetchLoginGovProfile(context.Background(), "Bearer token", server.URL)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("FetchLoginGovProfile() error = %v, want error containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchLoginGovProfileHonorsContextDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	_, err := FetchLoginGovProfile(ctx, "Bearer token", server.URL)
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("FetchLoginGovProfile() error = %v, want context deadline exceeded", err)
 	}
 }
