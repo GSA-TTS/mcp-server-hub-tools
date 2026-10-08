@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"time"
 )
+
+const maxUserInfoResponseBytes = 1 << 20
+
+var userInfoClient = &http.Client{Timeout: 10 * time.Second}
 
 // LoginGovProfile represents the claims returned by the login.gov
 // userinfo endpoint ({base}/api/openid_connect/userinfo).
@@ -33,20 +37,26 @@ func FetchLoginGovProfile(ctx context.Context, accessToken, userInfoURL string) 
 		return nil, err
 	}
 	req.Header.Set("Authorization", accessToken)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := userInfoClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetch login.gov userinfo: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		result, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status code: %d: %s", resp.StatusCode, result)
+		return nil, fmt.Errorf("login.gov userinfo returned status %d", resp.StatusCode)
 	}
 
 	var profile LoginGovProfile
-	if err = json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-		return nil, err
+	limitedBody := http.MaxBytesReader(nil, resp.Body, maxUserInfoResponseBytes)
+	if err = json.NewDecoder(limitedBody).Decode(&profile); err != nil {
+		return nil, fmt.Errorf("decode login.gov userinfo: %w", err)
+	}
+	if profile.Subject == "" || profile.Email == "" {
+		return nil, fmt.Errorf("login.gov userinfo response is missing required claims")
+	}
+	if !profile.EmailVerified {
+		return nil, fmt.Errorf("login.gov userinfo email is not verified")
 	}
 
 	return &profile, nil
