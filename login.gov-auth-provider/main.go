@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -168,7 +169,7 @@ func main() {
 	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(fmt.Sprintf("http://127.0.0.1:%s", port)))
 	})
-	mux.HandleFunc("/obot-get-state", state.ObotGetState(oauthProxy))
+	mux.HandleFunc("/obot-get-state", loginGovState(oauthProxy, userInfoURL))
 	mux.HandleFunc("/obot-get-user-info", func(w http.ResponseWriter, r *http.Request) {
 		userInfo, err := profile.FetchLoginGovProfile(r.Context(), r.Header.Get("Authorization"), userInfoURL)
 		if err != nil {
@@ -188,6 +189,53 @@ func main() {
 		fmt.Printf("ERROR: login.gov-auth-provider: failed to listen and serve: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func loginGovState(p *oauth2proxy.OAuthProxy, userInfoURL string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var sr state.SerializableRequest
+		if err := json.NewDecoder(r.Body).Decode(&sr); err != nil {
+			http.Error(w, "failed to decode request", http.StatusBadRequest)
+			return
+		}
+
+		reqObj, err := http.NewRequest(sr.Method, sr.URL, nil)
+		if err != nil {
+			http.Error(w, "failed to create request", http.StatusBadRequest)
+			return
+		}
+		reqObj.Header = sr.Header
+
+		ss, err := state.GetSerializableState(p, reqObj)
+		if err != nil {
+			http.Error(w, "failed to get authentication state", http.StatusUnauthorized)
+			return
+		}
+		if err = setLoginGovIdentity(r.Context(), &ss, userInfoURL); err != nil {
+			http.Error(w, "failed to validate Login.gov identity", http.StatusUnauthorized)
+			return
+		}
+
+		if err = json.NewEncoder(w).Encode(ss); err != nil {
+			http.Error(w, "failed to encode authentication state", http.StatusInternalServerError)
+		}
+	}
+}
+
+func setLoginGovIdentity(ctx context.Context, ss *state.SerializableState, userInfoURL string) error {
+	if ss.AccessToken == "" {
+		return errors.New("authentication state has no access token")
+	}
+
+	userInfo, err := profile.FetchLoginGovProfile(ctx, "Bearer "+ss.AccessToken, userInfoURL)
+	if err != nil {
+		return err
+	}
+
+	ss.User = userInfo.Subject
+	ss.PreferredUsername = userInfo.Subject
+	ss.Email = strings.ToLower(strings.TrimSpace(userInfo.Email))
+	return nil
 }
 
 func normalizeMultilineSecret(value string) string {

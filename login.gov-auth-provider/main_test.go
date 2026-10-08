@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/obot-platform/tools/auth-providers-common/pkg/state"
+)
 
 func TestNormalizeMultilineSecret(t *testing.T) {
 	tests := map[string]struct {
@@ -24,4 +30,45 @@ func TestNormalizeMultilineSecret(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSetLoginGovIdentityUsesVerifiedUserInfo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer session-token" {
+			t.Fatalf("Authorization = %q, want bearer session token", got)
+		}
+		_, _ = w.Write([]byte("{\"sub\":\"login-gov-subject\",\"email\":\"User@GSA.GOV \",\"email_verified\":true}"))
+	}))
+	defer server.Close()
+
+	ss := state.SerializableState{AccessToken: "session-token", User: "wrong-shared-user", Email: "wrong@example.com"}
+	if err := setLoginGovIdentity(t.Context(), &ss, server.URL); err != nil {
+		t.Fatalf("setLoginGovIdentity() error = %v", err)
+	}
+	if ss.User != "login-gov-subject" || ss.PreferredUsername != "login-gov-subject" {
+		t.Fatalf("state identity = (%q, %q), want Login.gov subject", ss.User, ss.PreferredUsername)
+	}
+	if ss.Email != "user@gsa.gov" {
+		t.Fatalf("state email = %q, want normalized verified email", ss.Email)
+	}
+}
+
+func TestSetLoginGovIdentityFailsClosed(t *testing.T) {
+	t.Run("missing access token", func(t *testing.T) {
+		if err := setLoginGovIdentity(t.Context(), &state.SerializableState{}, "http://unused"); err == nil {
+			t.Fatal("setLoginGovIdentity() succeeded without an access token")
+		}
+	})
+
+	t.Run("unverified userinfo", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("{\"sub\":\"subject\",\"email\":\"user@gsa.gov\",\"email_verified\":false}"))
+		}))
+		defer server.Close()
+
+		err := setLoginGovIdentity(t.Context(), &state.SerializableState{AccessToken: "token"}, server.URL)
+		if err == nil {
+			t.Fatal("setLoginGovIdentity() succeeded with an unverified email")
+		}
+	})
 }
