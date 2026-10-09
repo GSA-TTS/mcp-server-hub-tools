@@ -14,6 +14,7 @@ import (
 
 	oauth2proxy "github.com/oauth2-proxy/oauth2-proxy/v7"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/options"
+	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/sessions"
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/validation"
 	"github.com/obot-platform/tools/auth-providers-common/pkg/env"
 	"github.com/obot-platform/tools/auth-providers-common/pkg/state"
@@ -51,12 +52,11 @@ type Options struct {
 	// Environment selects the login.gov endpoint base: "sandbox" or "production".
 	Environment string `usage:"login.gov environment: sandbox or production" optional:"true" default:"sandbox" env:"OBOT_LOGINGOV_AUTH_PROVIDER_ENVIRONMENT"`
 
-	ObotServerURL            string `env:"OBOT_SERVER_PUBLIC_URL,OBOT_SERVER_URL"`
-	PostgresConnectionDSN    string `env:"OBOT_AUTH_PROVIDER_POSTGRES_CONNECTION_DSN" optional:"true"`
-	AuthCookieSecret         string `usage:"Secret used to encrypt cookie" env:"OBOT_AUTH_PROVIDER_COOKIE_SECRET"`
-	AuthEmailDomains         string `usage:"Email domains allowed for authentication" default:"*" env:"OBOT_AUTH_PROVIDER_EMAIL_DOMAINS"`
-	AuthTokenRefreshDuration string `usage:"Duration to refresh auth token after" optional:"true" default:"1h" env:"OBOT_AUTH_PROVIDER_TOKEN_REFRESH_DURATION"`
-	LoggingEnabled           string `usage:"Enable oauth2-proxy logging" optional:"true" env:"OBOT_AUTH_PROVIDER_ENABLE_LOGGING"`
+	ObotServerURL         string `env:"OBOT_SERVER_PUBLIC_URL,OBOT_SERVER_URL"`
+	PostgresConnectionDSN string `env:"OBOT_AUTH_PROVIDER_POSTGRES_CONNECTION_DSN" optional:"true"`
+	AuthCookieSecret      string `usage:"Secret used to encrypt cookie" env:"OBOT_AUTH_PROVIDER_COOKIE_SECRET"`
+	AuthEmailDomains      string `usage:"Email domains allowed for authentication" default:"*" env:"OBOT_AUTH_PROVIDER_EMAIL_DOMAINS"`
+	LoggingEnabled        string `usage:"Enable oauth2-proxy logging" optional:"true" env:"OBOT_AUTH_PROVIDER_ENABLE_LOGGING"`
 }
 
 func main() {
@@ -75,17 +75,6 @@ func main() {
 		base = productionBase
 	default:
 		fmt.Printf("ERROR: login.gov-auth-provider: invalid environment %q (expected \"sandbox\" or \"production\")\n", opts.Environment)
-		os.Exit(1)
-	}
-
-	refreshDuration, err := time.ParseDuration(opts.AuthTokenRefreshDuration)
-	if err != nil {
-		fmt.Printf("ERROR: login.gov-auth-provider: failed to parse token refresh duration: %v\n", err)
-		os.Exit(1)
-	}
-
-	if refreshDuration < 0 {
-		fmt.Printf("ERROR: login.gov-auth-provider: token refresh duration must be greater than 0\n")
 		os.Exit(1)
 	}
 
@@ -127,7 +116,9 @@ func main() {
 		oauthProxyOpts.Session.Postgres.ConnectionDSN = opts.PostgresConnectionDSN
 		oauthProxyOpts.Session.Postgres.TableNamePrefix = "logingov_"
 	}
-	oauthProxyOpts.Cookie.Refresh = refreshDuration
+	// Login.gov does not advertise the refresh_token grant. Expired access tokens
+	// require a fresh authorization flow instead of an oauth2-proxy refresh.
+	oauthProxyOpts.Cookie.Refresh = 0
 	oauthProxyOpts.Cookie.Name = "obot_access_token"
 	oauthProxyOpts.Cookie.Secret = string(bytes.TrimSpace(cookieSecret))
 	oauthProxyOpts.Cookie.Secure = strings.HasPrefix(opts.ObotServerURL, "https://")
@@ -206,7 +197,7 @@ func loginGovState(p *oauth2proxy.OAuthProxy, userInfoURL string) http.HandlerFu
 		}
 		reqObj.Header = sr.Header
 
-		ss, err := state.GetSerializableState(p, reqObj)
+		ss, err := getLoginGovSerializableState(p, reqObj)
 		if err != nil {
 			http.Error(w, "failed to get authentication state", http.StatusUnauthorized)
 			return
@@ -220,6 +211,34 @@ func loginGovState(p *oauth2proxy.OAuthProxy, userInfoURL string) http.HandlerFu
 			http.Error(w, "failed to encode authentication state", http.StatusInternalServerError)
 		}
 	}
+}
+
+func getLoginGovSerializableState(p *oauth2proxy.OAuthProxy, r *http.Request) (state.SerializableState, error) {
+	session, err := p.LoadCookiedSession(r)
+	if err != nil {
+		return state.SerializableState{}, fmt.Errorf("failed to load session: %w", err)
+	}
+	return serializeLoginGovSession(session)
+}
+
+func serializeLoginGovSession(session *sessions.SessionState) (state.SerializableState, error) {
+	if session == nil {
+		return state.SerializableState{}, errors.New("session is missing")
+	}
+	if session.IsExpired() {
+		return state.SerializableState{}, errors.New("session is expired")
+	}
+
+	return state.SerializableState{
+		ExpiresOn:         session.ExpiresOn,
+		AccessToken:       session.AccessToken,
+		IDToken:           session.IDToken,
+		PreferredUsername: session.PreferredUsername,
+		User:              session.User,
+		Email:             session.Email,
+		Groups:            session.Groups,
+		GroupInfos:        state.GroupInfoList{},
+	}, nil
 }
 
 func setLoginGovIdentity(ctx context.Context, ss *state.SerializableState, userInfoURL string) error {

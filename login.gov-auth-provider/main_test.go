@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/apis/sessions"
 	"github.com/obot-platform/tools/auth-providers-common/pkg/state"
 )
 
@@ -71,4 +73,34 @@ func TestSetLoginGovIdentityFailsClosed(t *testing.T) {
 			t.Fatal("setLoginGovIdentity() succeeded with an unverified email")
 		}
 	})
+}
+
+func TestSerializeLoginGovSessionDoesNotRefresh(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	ss, err := serializeLoginGovSession(&sessions.SessionState{
+		ExpiresOn:   &future,
+		AccessToken: "access-token",
+		User:        "subject",
+		Email:       "user@gsa.gov",
+	})
+	if err != nil {
+		t.Fatalf("serializeLoginGovSession() error = %v", err)
+	}
+	if ss.AccessToken != "access-token" || len(ss.SetCookies) != 0 {
+		t.Fatalf("serialized state unexpectedly refreshed: token=%q cookies=%d", ss.AccessToken, len(ss.SetCookies))
+	}
+}
+
+func TestSerializeLoginGovSessionRejectsInvalidSession(t *testing.T) {
+	past := time.Now().Add(-time.Minute)
+	for name, session := range map[string]*sessions.SessionState{
+		"missing": nil,
+		"expired": {ExpiresOn: &past},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := serializeLoginGovSession(session); err == nil {
+				t.Fatal("serializeLoginGovSession() succeeded for an invalid session")
+			}
+		})
+	}
 }
